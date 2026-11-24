@@ -1,2 +1,7 @@
 test/**
+src/**
+out/**
+tsconfig*.json
+**/*.tsbuildinfo
+esbuild.mts
 .vscodeignore

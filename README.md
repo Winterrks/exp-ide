@@ -39,7 +39,7 @@ Open the URL printed by the server. It listens on loopback port 5173 and uses Co
 
 The native desktop source and upstream launchers are included. To develop the Electron desktop application, follow the upstream desktop build instructions, install the full dependencies with the pinned pnpm, and launch with `scripts/code.sh` or `scripts/code.bat`. The Extensions view uses Open VSX and supports installing VSIX files. Microsoft-hosted services and proprietary extensions have their own access and licensing requirements. [Desktop build prerequisites](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
 
-Run the focused Keyline tests with `node --test extensions/keyline/test/*.test.js`. With Chromium installed, run `CHROMIUM_PATH=/usr/bin/chromium node --test extensions/keyline/test/workbench.mjs` to exercise the real workbench in a temporary workspace. The source for the guided workflow is in `extensions/keyline`.
+Run the focused Keyline tests with `node --test extensions/keyline/test/*.test.ts`. With Chromium installed, run `CHROMIUM_PATH=/usr/bin/chromium node --test extensions/keyline/test/workbench.mts` to exercise the real workbench in a temporary workspace. The source for the guided workflow is in `extensions/keyline`.
 
 # Visual Studio Code - Open Source ("Code - OSS")
 [![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)

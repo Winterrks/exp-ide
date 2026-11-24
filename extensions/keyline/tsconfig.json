@@ -1,0 +1,15 @@
+{
+	"extends": "../tsconfig.base.json",
+	"compilerOptions": {
+		"module": "NodeNext",
+		"rootDir": "./src",
+		"outDir": "./out",
+		"rewriteRelativeImportExtensions": true,
+		"types": ["node"]
+	},
+	"include": [
+		"src/**/*.ts",
+		"../../src/vscode-dts/vscode.d.ts",
+		"../../src/vscode-dts/vscode.proposed.treeViewMarkdownMessage.d.ts"
+	]
+}

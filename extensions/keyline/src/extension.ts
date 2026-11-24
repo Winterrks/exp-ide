@@ -6,38 +6,71 @@ import * as vscode from 'vscode';
 import { cp, mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { guides, matchGuide, nextStarter } from './guides.js';
-import { alignTyped, completedEdit, visibleChar } from './guidance.js';
-import { modelConfig, modelEndpoint, propose, providers } from './planner.js';
-import { DraftStore } from './draft.js';
-import { guideTerminal } from './terminal.js';
+import { guides, matchGuide, nextStarter, type GuideKey } from './guides.ts';
+import { alignTyped, completedEdit, visibleChar } from './guidance.ts';
+import { modelConfig, modelEndpoint, propose, providers, type ModelConfig, type ModelSelection } from './planner.ts';
+import { DraftStore } from './draft.ts';
+import { guideTerminal } from './terminal.ts';
+import type { Action, Observation, Result } from './actions.ts';
+
+interface Draft {
+	original: vscode.TextDocument;
+	uri: vscode.Uri;
+	range: vscode.Range;
+	before: string;
+	after: string;
+	old: string;
+	baseline: string;
+	proposed: string;
+	touched: boolean;
+	saving?: boolean;
+	appliedText?: string;
+}
+
+type Session = ({ key: GuideKey; model?: undefined } | { key?: undefined; model: ModelConfig }) & {
+	root: vscode.Uri;
+	goal: string;
+	history: Observation[];
+	action?: Action;
+	busy?: boolean;
+	created?: boolean;
+	problem?: string;
+	observation?: { doc: vscode.TextDocument; range: vscode.Range; version: number };
+	draft?: Draft;
+	opening?: Promise<void>;
+	terminal?: vscode.Terminal;
+};
 
 const { commands, window, workspace, l10n } = vscode;
 const t = l10n.t;
-const lf = text => text.replace(/\r\n/g, '\n');
-const same = (a, b) => a?.toString() === b?.toString();
-const resource = (s, relative = s.action.path) => vscode.Uri.joinPath(s.root, ...relative.split('/'));
-const contextKey = (key, value) => commands.executeCommand('setContext', 'keyline.' + key, value);
+const lf = (text: string) => text.replace(/\r\n/g, '\n');
+const same = (a: vscode.Uri, b: vscode.Uri) => a?.toString() === b?.toString();
+const resource = (s: Session, relative: string) => vscode.Uri.joinPath(s.root, ...relative.split('/'));
+const contextKey = (key: string, value: boolean) => commands.executeCommand('setContext', 'keyline.' + key, value);
 
-function lines(document, first, last) {
+function lines(document: vscode.TextDocument, first: number, last: number) {
 	if (first > document.lineCount || first < 1) { throw new Error(t('The requested lines have moved. Start a new guide to read the current version.')); }
 	const start = new vscode.Position(first - 1, 0);
 	return new vscode.Range(start, last < first ? start : document.lineAt(Math.min(last, document.lineCount) - 1).range.end);
 }
 
-function at(text, index) {
+function at(text: string, index: number) {
 	const parts = text.slice(0, index).split('\n');
-	return new vscode.Position(parts.length - 1, parts.at(-1).length);
+	return new vscode.Position(parts.length - 1, parts[parts.length - 1].length);
 }
 
-async function verifyLocation(root, file) {
+function hasTabResource(input: unknown): input is { uri: vscode.Uri } {
+	return typeof input === 'object' && input !== null && 'uri' in input && input.uri instanceof vscode.Uri;
+}
+
+async function verifyLocation(root: vscode.Uri, file: vscode.Uri) {
 	const relative = path.relative(await realpath(root.fsPath), await realpath(file.fsPath));
 	if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
 		throw new Error(t('This file resolves outside the guided workspace.'));
 	}
 }
 
-function row(label, icon, command, description) {
+function row(label: string, icon: string, command?: string, description?: string) {
 	const item = new vscode.TreeItem(label);
 	item.iconPath = new vscode.ThemeIcon(icon);
 	item.description = description;
@@ -47,22 +80,22 @@ function row(label, icon, command, description) {
 
 const modelPreference = 'modelSelection';
 
-function secretName(config) {
+function secretName(config: ModelConfig) {
 	const url = modelEndpoint(config);
 	return 'apiKey/' + config.provider + '/' + url.origin + url.pathname;
 }
 
-function selectedModel(context) {
-	return modelConfig(process.env, context.globalState.get(modelPreference));
+function selectedModel(context: vscode.ExtensionContext) {
+	return modelConfig(process.env, context.globalState.get<ModelSelection>(modelPreference));
 }
 
-async function apiKeyForModel(context, config) {
+async function apiKeyForModel(context: vscode.ExtensionContext, config: ModelConfig) {
 	return config.apiKey || await context.secrets.get(secretName(config));
 }
 
-async function chooseModel(context) {
-	const previous = context.globalState.get(modelPreference);
-	const items = Object.entries(providers).map(([provider, { label }]) => ({
+async function chooseModel(context: vscode.ExtensionContext) {
+	const previous = context.globalState.get<ModelSelection>(modelPreference);
+	const items: (vscode.QuickPickItem & { provider?: string })[] = Object.entries(providers).map(([provider, { label }]) => ({
 		provider, label, description: modelConfig(process.env, previous?.provider === provider ? previous : { provider }).model
 	}));
 	if (previous) { items.push({ label: t('Use Environment Defaults') }); }
@@ -100,49 +133,56 @@ async function chooseModel(context) {
 	return config;
 }
 
-export function activate(context) {
-	const own = item => { context.subscriptions.push(item); return item; };
-	const changed = own(new vscode.EventEmitter());
-	const filesChanged = own(new vscode.EventEmitter());
+export function activate(context: vscode.ExtensionContext) {
+	const own = <T extends vscode.Disposable>(item: T): T => { context.subscriptions.push(item); return item; };
+	const changed = own(new vscode.EventEmitter<void>());
+	const filesChanged = own(new vscode.EventEmitter<vscode.Uri | undefined>());
 	const drafts = own(new DraftStore());
 	own(workspace.registerFileSystemProvider('keyline-draft', drafts, { isCaseSensitive: true }));
-	const decoration = options => own(window.createTextEditorDecorationType(options));
+	const decoration = (options: vscode.DecorationRenderOptions) => own(window.createTextEditorDecorationType(options));
 	const green = decoration({ isWholeLine: true, backgroundColor: new vscode.ThemeColor('diffEditor.insertedLineBackground') });
 	const red = decoration({ isWholeLine: true, backgroundColor: new vscode.ThemeColor('diffEditor.removedLineBackground') });
-	const difference = decoration({ backgroundColor: new vscode.ThemeColor('diffEditor.removedTextBackground'),
-		textDecoration: 'underline wavy', color: new vscode.ThemeColor('editorError.foreground') });
-	const hint = decoration({ after: { color: new vscode.ThemeColor('editorGhostText.foreground'),
-		fontStyle: 'italic' }, rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed });
-	let session;
+	const difference = decoration({
+		backgroundColor: new vscode.ThemeColor('diffEditor.removedTextBackground'),
+		textDecoration: 'underline wavy', color: new vscode.ThemeColor('editorError.foreground')
+	});
+	const hint = decoration({
+		after: {
+			color: new vscode.ThemeColor('editorGhostText.foreground'),
+			fontStyle: 'italic'
+		}, rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed
+	});
+	let session: Session | undefined;
 	let changing = false;
 
-	const view = own(window.createTreeView('keyline.guide', { treeDataProvider: {
-		onDidChangeTreeData: changed.event, getTreeItem: item => item,
-		getChildren() {
-			const s = session;
-			if (!s) { return []; }
-			const items = [];
-			if (s.problem) {
-				items.push(row(t('Retry Step'), 'refresh', 'keyline.resume'));
-				if (!s.action && !s.key) { items.push(row(t('Start a Practice Guide'), 'book', 'keyline.practice')); }
+	const view: vscode.TreeView2<vscode.TreeItem> = own(window.createTreeView<vscode.TreeItem>('keyline.guide', {
+		treeDataProvider: {
+			onDidChangeTreeData: changed.event, getTreeItem: item => item,
+			getChildren() {
+				const s = session;
+				if (!s) { return []; }
+				const items = [];
+				if (s.problem) {
+					items.push(row(t('Retry Step'), 'refresh', 'keyline.resume'));
+					if (!s.action && !s.key) { items.push(row(t('Start a Practice Guide'), 'book', 'keyline.practice')); }
+				}
+				else if (s.action?.kind === 'done') { items.push(row(t('Describe Another Change'), 'add', 'keyline.start')); }
+				else if (s.action?.kind === 'read' && s.observation) { items.push(row(t('Share Selected Lines'), 'arrow-right', 'keyline.continue')); }
+				else if (s.action && !s.busy) { items.push(row(t('Return to Current Step'), 'go-to-file', 'keyline.resume')); }
+				if (s.key && s.action) {
+					const current = s.action.index ?? guides[s.key].steps.length;
+					guides[s.key].steps.forEach((label, i) => items.push(row(label, i < current ? 'check' : i === current ? 'circle-filled' : 'circle-outline')));
+				} else if (s.history.length) {
+					for (const entry of s.history.slice(-5)) { items.push(row(entry.action.title, 'check')); }
+				}
+				return items;
 			}
-			else if (s.action?.kind === 'done') { items.push(row(t('Describe Another Change'), 'add', 'keyline.start')); }
-			else if (s.action?.kind === 'read' && s.observation) { items.push(row(t('Share Selected Lines'), 'arrow-right', 'keyline.continue')); }
-			else if (s.action && !s.busy) { items.push(row(t('Return to Current Step'), 'go-to-file', 'keyline.resume')); }
-			if (s.key && s.action) {
-				const current = s.action.index ?? guides[s.key].steps.length;
-				guides[s.key].steps.forEach((label, i) => items.push(row(label, i < current ? 'check' : i === current ? 'circle-filled' : 'circle-outline')));
-			} else if (s.history.length) {
-				for (const entry of s.history.slice(-5)) { items.push(row(entry.action.title, 'check')); }
-			}
-			return items;
 		}
-	} }));
+	}));
 
-	const instruction = s => {
-		const a = s.action;
+	const instruction = (s: Session, a: Action) => {
 		if (a.kind === 'read') {
-			return s.observation ? t('Review the green lines, then share them to continue.') : t('Open {0} in Explorer to inspect lines {1}–{2}.', a.path, a.startLine, a.endLine);
+			return s.observation ? t('Review the green lines, then share them to continue.') : t('Open {0} in Explorer to inspect lines {1} through {2}.', a.path, a.startLine, a.endLine);
 		}
 		if (a.kind === 'create' && !s.draft) { return t('Use New File in Explorer to create {0}.', a.path); }
 		if (s.draft) { return t('Type the change in the editor. On a new line, type //DONE to finish.'); }
@@ -160,7 +200,7 @@ export function activate(context) {
 			else if (s.busy) { message.appendText(t('Planning the next step…')); }
 			else if (s.action) {
 				message.appendText(s.action.reason);
-				const help = instruction(s);
+				const help = instruction(s, s.action);
 				if (help) { message.appendMarkdown('\n\n').appendText(help); }
 			}
 			// appendText escapes untrusted content but encodes every space as nonbreaking.
@@ -177,31 +217,31 @@ export function activate(context) {
 		onDidChangeFileDecorations: filesChanged.event,
 		provideFileDecoration(uri) {
 			const s = session;
-			if (!s?.action || !['read', 'create'].includes(s.action.kind) || s.draft || s.busy) { return; }
-			const target = resource(s);
+			if (!s?.action || (s.action.kind !== 'read' && s.action.kind !== 'create') || s.draft || s.busy) { return; }
+			const target = resource(s, s.action.path);
 			if (target.scheme !== uri.scheme || target.authority !== uri.authority || !uri.path.startsWith(s.root.path)) { return; }
-			if (same(target, uri) || target.path.startsWith(uri.path + '/')) {
-				return { badge: '›', tooltip: s.action.reason, color: new vscode.ThemeColor('gitDecoration.addedResourceForeground') };
-			}
+			if (!same(target, uri) && !target.path.startsWith(uri.path + '/')) { return; }
+			return { badge: '\u203a', tooltip: s.action.reason, color: new vscode.ThemeColor('gitDecoration.addedResourceForeground') };
 		}
 	}));
 
-	function report(s, error) {
-		if (s && session === s) { s.busy = false; s.problem = error.message; update(); }
-		else { void window.showErrorMessage(error.message); }
+	function report(s: Session | undefined, error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (s && session === s) { s.busy = false; s.problem = message; update(); }
+		else { void window.showErrorMessage(message); }
 	}
-	const guard = callback => async (...args) => {
+	const guard = <Args extends unknown[]>(callback: (...args: Args) => unknown) => async (...args: Args) => {
 		const s = session;
-		try { return await callback(...args); } catch (error) { report(s, error); }
+		try { return await callback(...args); } catch (error) { return report(s, error); }
 	};
-	const register = (id, callback) => own(commands.registerCommand('keyline.' + id, guard(callback)));
+	const register = <Args extends unknown[]>(id: string, callback: (...args: Args) => unknown) => own(commands.registerCommand('keyline.' + id, guard(callback)));
 
-	async function names(s) {
+	async function names(s: Session) {
 		const uris = await workspace.findFiles(new vscode.RelativePattern(s.root, '**/*'), '**/{.git,.keyline,node_modules,dist,out}/**', 4000);
 		return uris.map(uri => ({ path: path.relative(s.root.fsPath, uri.fsPath).split(path.sep).join('/') }));
 	}
 
-	async function plan(s) {
+	async function plan(s: Session) {
 		s.action = undefined; s.created = false; s.observation = undefined; s.problem = undefined; s.busy = true; update();
 		try {
 			const action = s.key ? nextStarter(s.key, s.history, await names(s))
@@ -212,24 +252,24 @@ export function activate(context) {
 		} catch (error) { if (session === s) { report(s, error); } }
 	}
 
-	async function advance(s, result) {
-		if (session !== s || s.busy) { return; }
+	async function advance(s: Session, result: Result) {
+		if (session !== s || s.busy || !s.action) { return; }
 		s.history.push({ action: s.action, result });
 		for (const editor of window.visibleTextEditors) { editor.setDecorations(green, []); }
 		await plan(s);
 	}
 
-	async function revealExplorer(s) {
+	async function revealExplorer(s: Session, action: Extract<Action, { kind: 'read' | 'create' }>) {
 		await commands.executeCommand('workbench.view.explorer');
-		let focus = resource(s);
-		if (s.action.kind === 'create') { focus = vscode.Uri.joinPath(focus, '..'); }
+		let focus = resource(s, action.path);
+		if (action.kind === 'create') { focus = vscode.Uri.joinPath(focus, '..'); }
 		try { await workspace.fs.stat(focus); await commands.executeCommand('revealInExplorer', focus); }
 		catch { /* A proposed parent directory may still need to be created. */ }
 	}
 
-	async function observe(uri) {
+	async function observe(uri: vscode.Uri) {
 		const s = session;
-		if (s?.action?.kind !== 'read' || s.busy || !same(resource(s), uri)) { return; }
+		if (s?.action?.kind !== 'read' || s.busy || !same(resource(s, s.action.path), uri)) { return; }
 		await verifyLocation(s.root, uri);
 		const doc = await workspace.openTextDocument(uri);
 		if (session !== s || s.action?.kind !== 'read') { return; }
@@ -240,14 +280,14 @@ export function activate(context) {
 		s.observation = { doc, range, version: doc.version }; s.problem = undefined; update();
 	}
 
-	function draw(editor) {
+	function draw(editor: vscode.TextEditor | undefined) {
 		const d = session?.draft;
 		if (!editor || !d || !same(editor.document.uri, d.uri)) { return; }
 		const text = lf(editor.document.getText());
 		const valid = text.startsWith(d.before) && text.endsWith(d.after) && text.length >= d.before.length + d.after.length;
 		const end = text.length - d.after.length;
 		const value = valid ? text.slice(d.before.length, end) : '';
-		const startAt = index => at(text, d.before.length + index);
+		const startAt = (index: number) => at(text, d.before.length + index);
 		editor.setDecorations(red, valid && !d.touched && d.old ? [new vscode.Range(startAt(0), startAt(value.length))] : []);
 		if (!valid) { editor.setDecorations(hint, []); editor.setDecorations(difference, []); return; }
 		const typing = d.touched ? value : '';
@@ -261,17 +301,18 @@ export function activate(context) {
 		editor.setDecorations(difference, alignTyped(typing, d.proposed).errors.map(([a, b]) => new vscode.Range(startAt(a), startAt(b))));
 	}
 
-	async function openDraft(s) {
+	async function openDraft(s: Session) {
 		s.opening ??= prepareDraft(s);
 		try { await s.opening; } finally { s.opening = undefined; }
 	}
 
-	async function prepareDraft(s) {
-		const target = resource(s);
+	async function prepareDraft(s: Session) {
+		const a = s.action;
+		if (!a || (a.kind !== 'edit' && a.kind !== 'create')) { return; }
+		const target = resource(s, a.path);
 		await verifyLocation(s.root, target);
 		const original = await workspace.openTextDocument(target);
-		if (session !== s) { return; }
-		const a = s.action;
+		if (session !== s || s.action !== a) { return; }
 		const range = a.kind === 'create' ? lines(original, 1, original.lineCount) : lines(original, a.startLine, a.endLine);
 		const expected = a.kind === 'create' ? '' : a.oldText;
 		const old = lf(original.getText(range));
@@ -291,23 +332,24 @@ export function activate(context) {
 		draw(editor); update();
 	}
 
-	async function closeDraft(s) {
+	async function closeDraft(s: Session) {
 		const d = s.draft;
 		if (!d) { return; }
 		s.draft = undefined;
 		const doc = workspace.textDocuments.find(doc => same(doc.uri, d.uri));
 		if (doc?.isDirty) { await doc.save(); }
-		const tabs = window.tabGroups.all.flatMap(group => group.tabs).filter(tab => same(tab.input?.uri, d.uri));
+		const tabs = window.tabGroups.all.flatMap(group => group.tabs).filter(tab => hasTabResource(tab.input) && same(tab.input.uri, d.uri));
 		if (tabs.length) { await window.tabGroups.close(tabs, true); }
 		drafts.release(d.uri);
 	}
 
-	async function commit(s, typed) {
+	async function commit(s: Session, typed: string) {
 		const d = s.draft;
-		if (!d || d.saving || session !== s) { return; }
+		const action = s.action;
+		if (!d || d.saving || session !== s || !action || (action.kind !== 'edit' && action.kind !== 'create')) { return; }
 		d.saving = true;
 		try {
-			const doc = await workspace.openTextDocument(resource(s));
+			const doc = await workspace.openTextDocument(d.original.uri);
 			await verifyLocation(s.root, doc.uri);
 			if (session !== s || s.draft !== d) { return; }
 			const expected = d.appliedText === undefined ? d.baseline : d.before + d.appliedText + d.after;
@@ -324,11 +366,11 @@ export function activate(context) {
 			const actual = result.startsWith(d.before) && result.endsWith(d.after) ? result.slice(d.before.length, result.length - d.after.length) : typed;
 			await closeDraft(s);
 			await window.showTextDocument(doc, { preserveFocus: true, preview: false });
-			await advance(s, { path: s.action.path, text: actual });
+			await advance(s, { path: action.path, text: actual });
 		} finally { d.saving = false; }
 	}
 
-	function draftChanged(event) {
+	function draftChanged(event: vscode.TextDocumentChangeEvent) {
 		const s = session;
 		if (!s || !event.contentChanges.length) { return; }
 		if (s.observation && same(s.observation.doc.uri, event.document.uri)) {
@@ -353,13 +395,14 @@ export function activate(context) {
 	own(window.onDidChangeTextEditorSelection(event => draw(event.textEditor)));
 	own(window.onDidChangeActiveTextEditor(draw));
 
-	own(workspace.onDidCreateFiles(guard(async event => {
+	own(workspace.onDidCreateFiles(guard(async (event: vscode.FileCreateEvent) => {
 		const s = session;
 		if (s?.action?.kind !== 'create' || s.busy || s.draft) { return; }
-		if (event.files.some(uri => same(uri, resource(s)))) { s.created = true; await openDraft(s); }
+		const target = resource(s, s.action.path);
+		if (event.files.some(uri => same(uri, target))) { s.created = true; await openDraft(s); }
 	})));
 
-	async function present(s) {
+	async function present(s: Session) {
 		if (s.busy || session !== s) { return; }
 		if (!s.action) { await plan(s); return; }
 		if (s.draft) {
@@ -369,7 +412,7 @@ export function activate(context) {
 			if (marker) { await commit(s, marker.text); }
 			else { draw(editor); }
 		} else if (s.action.kind === 'edit' || (s.action.kind === 'create' && s.created)) { await openDraft(s); }
-		else if (s.action.kind === 'read' || s.action.kind === 'create') { await revealExplorer(s); }
+		else if (s.action.kind === 'read' || s.action.kind === 'create') { await revealExplorer(s, s.action); }
 		else if (s.action.kind === 'command') {
 			if (!s.terminal) {
 				const terminal = guideTerminal(s.action, s.root.fsPath, result => {
@@ -397,7 +440,7 @@ export function activate(context) {
 		await commands.executeCommand('vscode.openFolder', vscode.Uri.file(root), { forceNewWindow: true });
 	}
 
-	async function start(practice) {
+	async function start(practice: boolean) {
 		if (changing) { return; }
 		changing = true;
 		try {
@@ -408,9 +451,9 @@ export function activate(context) {
 				else if (!folders.length) { await commands.executeCommand('workbench.action.files.openFolder'); }
 				return;
 			}
-			let key;
-			let goal;
-			let model;
+			let key: GuideKey | undefined;
+			let goal: string | undefined;
+			let model: ModelConfig | undefined;
 			if (practice) {
 				try { await workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'src', 'tasks.js')); }
 				catch {
@@ -418,7 +461,7 @@ export function activate(context) {
 					if (await window.showInformationMessage(t('Practice guides use a fresh copy of Taskboard.'), open) === open) { await sample(); }
 					return;
 				}
-				const pick = await window.showQuickPick(Object.entries(guides).map(([key, g]) => ({ key, label: g.title, detail: g.description })), { title: t('Choose a Practice Guide') });
+				const pick = await window.showQuickPick(Object.entries(guides).map(([key, g]) => ({ key: key as GuideKey, label: g.title, detail: g.description })), { title: t('Choose a Practice Guide') });
 				if (!pick) { return; }
 				key = pick.key; goal = pick.label;
 			} else {
@@ -445,7 +488,9 @@ export function activate(context) {
 				if (await window.showWarningMessage(t('Starting a new guide closes your current typing draft.'), { modal: true }, replace) !== replace) { return; }
 			}
 			await end();
-			const s = { root: folder.uri, key, goal, model, history: [] };
+			const mode = key ? { key } : model ? { model } : undefined;
+			if (!mode) { return; }
+			const s: Session = { root: folder.uri, ...mode, goal, history: [] };
 			session = s;
 			await commands.executeCommand('keyline.guide.focus');
 			await plan(s);
@@ -473,7 +518,7 @@ export function activate(context) {
 	register('continue', async () => {
 		const s = session;
 		const read = s?.observation;
-		if (!read || read.version !== read.doc.version || s.busy) { return; }
+		if (!s || s.action?.kind !== 'read' || !read || read.version !== read.doc.version || s.busy) { return; }
 		await advance(s, { path: s.action.path, startLine: read.range.start.line + 1, endLine: read.range.end.line + 1, text: lf(read.doc.getText(read.range)) });
 	});
 	own(new vscode.Disposable(() => session?.terminal?.dispose()));

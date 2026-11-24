@@ -1,4 +1,9 @@
-import { lineRegion } from './guidance.js';
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Keyline contributors. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+import { isReadResult, type Action, type Observation, type WorkspaceFile } from './actions.ts';
+import { lineRegion } from './guidance.ts';
 
 export const providers = {
 	openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini' },
@@ -6,17 +11,40 @@ export const providers = {
 	anthropic: { label: 'Anthropic', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-6' }
 };
 
-function environmentProvider(env) {
+export type Provider = keyof typeof providers;
+export interface ModelSelection {
+	provider: Provider;
+	model?: string;
+}
+export interface ModelConfig extends ModelSelection {
+	model: string;
+	baseUrl: string;
+	apiKey?: string;
+}
+type Endpoint = { provider?: Provider; baseUrl?: string };
+type RequestConfig = Endpoint & { model: string; apiKey?: string };
+export type ModelRequest = (url: string, options: RequestInit & { body: string }) => Promise<Response>;
+export interface Turn {
+	goal: string;
+	files: string[];
+	observations: Observation[];
+}
+
+function isProvider(value: string): value is Provider {
+	return Object.hasOwn(providers, value);
+}
+
+function environmentProvider(env: NodeJS.ProcessEnv) {
 	if (env.KEYLINE_MODEL_PROVIDER?.trim()) { return env.KEYLINE_MODEL_PROVIDER.trim().toLowerCase(); }
 	// Existing generic credentials and compatible base URLs belong to the original OpenAI configuration.
 	if (env.KEYLINE_MODEL_API_KEY || env.KEYLINE_MODEL_BASE_URL || env.OPENAI_API_KEY) { return 'openai'; }
 	return Object.keys(providers).find(id => env[id.toUpperCase() + '_API_KEY']) ?? 'openai';
 }
 
-export function modelConfig(env, selection = {}) {
+export function modelConfig(env: NodeJS.ProcessEnv, selection: { provider?: string; model?: string } = {}): ModelConfig {
 	const defaultProvider = environmentProvider(env);
 	const provider = selection.provider ?? defaultProvider;
-	if (!Object.hasOwn(providers, provider)) {
+	if (!isProvider(provider)) {
 		throw new Error('Choose OpenAI, OpenRouter, or Anthropic in Keyline, or set KEYLINE_MODEL_PROVIDER to openai, openrouter, or anthropic.');
 	}
 	const defaults = providers[provider];
@@ -30,8 +58,8 @@ export function modelConfig(env, selection = {}) {
 	};
 }
 
-export function modelEndpoint({ provider = 'openai', baseUrl }) {
-	if (!Object.hasOwn(providers, provider)) { throw new Error('Unknown Keyline model provider.'); }
+export function modelEndpoint({ provider = 'openai', baseUrl }: Endpoint) {
+	if (!isProvider(provider)) { throw new Error('Unknown Keyline model provider.'); }
 	const url = URL.parse(baseUrl || providers[provider].baseUrl);
 	if (!url || !['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
 		throw new Error('Set the model base URL to an HTTP or HTTPS API endpoint.');
@@ -48,18 +76,22 @@ export function modelEndpoint({ provider = 'openai', baseUrl }) {
 	return url;
 }
 
-function textBlocks(blocks, type) {
-	if (!Array.isArray(blocks)) { return ''; }
-	return blocks.filter(block => block?.type === type && typeof block.text === 'string').map(block => block.text).join('');
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null;
 }
 
-async function requestProposal(config, instructions, turn, request) {
+function textBlocks(blocks: unknown, type: string): string {
+	if (!Array.isArray(blocks)) { return ''; }
+	return blocks.filter(isRecord).map(block => block.type === type && typeof block.text === 'string' ? block.text : '').join('');
+}
+
+async function requestProposal(config: RequestConfig & { apiKey: string }, instructions: string, turn: Turn, request: ModelRequest): Promise<unknown> {
 	const provider = config.provider ?? 'openai';
 	const url = modelEndpoint(config);
 	const label = providers[provider].label;
 	const responses = provider === 'openai' && url.pathname.endsWith('/responses');
 	const content = JSON.stringify(turn);
-	const headers = { 'Content-Type': 'application/json' };
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	let body;
 	if (provider === 'anthropic') {
 		headers['x-api-key'] = config.apiKey;
@@ -70,9 +102,11 @@ async function requestProposal(config, instructions, turn, request) {
 		if (responses) {
 			body = { model: config.model, instructions, input: content, store: false };
 		} else {
-			body = { model: config.model, messages: [{ role: 'system', content: instructions }, { role: 'user', content }] };
 			// OpenRouter also routes models that do not support a JSON-mode parameter.
-			if (provider === 'openai') { body.response_format = { type: 'json_object' }; }
+			body = {
+				model: config.model, messages: [{ role: 'system', content: instructions }, { role: 'user', content }],
+				response_format: provider === 'openai' ? { type: 'json_object' } : undefined
+			};
 		}
 	}
 
@@ -83,22 +117,22 @@ async function requestProposal(config, instructions, turn, request) {
 		throw new Error(`${label} returned HTTP ${response.status}. Check the API key, model ID, and endpoint, then retry.`);
 	}
 	const unreadable = () => new Error(`${label} returned an unreadable proposal. Retry this step.`);
-	let data;
+	let data: unknown;
 	try { data = await response.json(); } catch { throw unreadable(); }
-	if (!data || data.error) { throw new Error(`${label} could not complete the model request. Check the model and retry.`); }
+	if (!isRecord(data) || data.error) { throw new Error(`${label} could not complete the model request. Check the model and retry.`); }
 
 	let text;
 	if (provider === 'anthropic') {
-		if (!['end_turn', 'stop_sequence'].includes(data.stop_reason)) { throw unreadable(); }
+		if (data.stop_reason !== 'end_turn' && data.stop_reason !== 'stop_sequence') { throw unreadable(); }
 		text = textBlocks(data.content, 'text');
 	} else if (responses) {
 		if (data.status !== 'completed' || !Array.isArray(data.output)) { throw unreadable(); }
-		text = data.output.filter(item => item?.type === 'message' && item.role === 'assistant')
+		text = data.output.filter(isRecord).filter(item => item.type === 'message' && item.role === 'assistant')
 			.map(item => textBlocks(item.content, 'output_text')).join('');
 	} else {
-		const choice = data.choices?.[0];
-		if (choice?.message?.refusal || (choice?.finish_reason && choice.finish_reason !== 'stop')) { throw unreadable(); }
-		text = choice?.message?.content;
+		const choice: unknown = Array.isArray(data.choices) ? data.choices[0] : undefined;
+		if (!isRecord(choice) || !isRecord(choice.message) || choice.message.refusal || (choice.finish_reason && choice.finish_reason !== 'stop')) { throw unreadable(); }
+		text = choice.message.content;
 	}
 	if (typeof text !== 'string' || !text.trim()) { throw unreadable(); }
 	const reply = text.trim();
@@ -114,32 +148,40 @@ const instructions = `You guide a learner through a code change in Keyline. Retu
 {"kind":"done","title":"Session complete","reason":"Summarize the observed outcome."}
 For insertions use endLine = startLine - 1 and oldText = "". Line numbers are 1-based. If you need a new directory, guide the learner to create the parent in the explorer. If a test fails, investigate the actual result. If the goal is ambiguous, use done to explain what information is needed.`;
 
-function validate(action, observations, names) {
-  const kinds = ['read', 'edit', 'create', 'command', 'done'];
-  const invalid = () => { throw new Error('The model supplied an invalid action. Retry this step.'); };
-  if (!action || !kinds.includes(action.kind) || typeof action.title !== 'string' || !action.title.trim() || typeof action.reason !== 'string' || !action.reason.trim()) invalid();
-  if (['read', 'edit', 'create'].includes(action.kind)) {
-    if (typeof action.path !== 'string' || !action.path || /[\\\x00-\x1f]/.test(action.path) || action.path.split('/').some(p => !p || p === '..' || p === '.')) invalid();
-    if (action.kind !== 'create' && !names.includes(action.path)) invalid();
-    if (action.kind === 'create' && names.includes(action.path)) invalid();
-  }
-  if (['read', 'edit'].includes(action.kind)) {
-    if (!Number.isSafeInteger(action.startLine) || !Number.isSafeInteger(action.endLine) || action.startLine < 1 || action.endLine < action.startLine - Number(action.kind === 'edit') || action.endLine - action.startLine > 200) invalid();
-  }
-  if (action.kind === 'edit') {
-    if (typeof action.oldText !== 'string') invalid();
-    const read = observations.findLast(o => o.action.kind === 'read' && o.action.path === action.path && o.result.startLine <= action.startLine && o.result.endLine >= action.endLine);
-    if (!read || lineRegion(read.result.text, action.startLine - read.result.startLine + 1, action.endLine - read.result.startLine + 1)?.text !== action.oldText) invalid();
-  }
-  if (['edit', 'create'].includes(action.kind) && (typeof action.text !== 'string' || action.text.length > 8000)) invalid();
-  if (action.kind === 'command' && (typeof action.command !== 'string' || !action.command.trim() || action.command.length > 180 || /[\r\n]/.test(action.command))) invalid();
-  return action;
+function invalidAction(): never {
+	throw new Error('The model supplied an invalid action. Retry this step.');
 }
 
-export async function propose({ goal, history = [] }, workspace, config, request = fetch) {
+function validate(action: unknown, observations: Observation[], names: string[]): Action {
+	if (!isRecord(action)) { return invalidAction(); }
+	const { kind, title, reason, path, startLine, endLine, oldText, text, command } = action;
+	if (typeof title !== 'string' || !title.trim() || typeof reason !== 'string' || !reason.trim()) { return invalidAction(); }
+	if (kind === 'done') { return { kind, title, reason }; }
+	if (kind === 'command') {
+		if (typeof command !== 'string' || !command.trim() || command.length > 180 || /[\r\n]/.test(command)) { return invalidAction(); }
+		return { kind, title, reason, command };
+	}
+	if (typeof path !== 'string' || !path || /[\\\x00-\x1f]/.test(path) || path.split('/').some(part => !part || part === '..' || part === '.')) { return invalidAction(); }
+	if (kind === 'create') {
+		if (names.includes(path) || typeof text !== 'string' || text.length > 8000) { return invalidAction(); }
+		return { kind, title, reason, path, text };
+	}
+	if ((kind !== 'read' && kind !== 'edit') || !names.includes(path)) { return invalidAction(); }
+	if (typeof startLine !== 'number' || typeof endLine !== 'number' || !Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine)
+		|| startLine < 1 || endLine < startLine - Number(kind === 'edit') || endLine - startLine > 200) { return invalidAction(); }
+	if (kind === 'read') { return { kind, title, reason, path, startLine, endLine }; }
+	if (typeof oldText !== 'string' || typeof text !== 'string' || text.length > 8000) { return invalidAction(); }
+	const read = observations.findLast(({ action, result }) => action.kind === 'read' && action.path === path &&
+		isReadResult(result) && result.startLine <= startLine && result.endLine >= endLine)?.result;
+	if (!read || !isReadResult(read) || lineRegion(read.text, startLine - read.startLine + 1, endLine - read.startLine + 1)?.text !== oldText) { return invalidAction(); }
+	return { kind, title, reason, path, startLine, endLine, oldText, text };
+}
+
+export async function propose({ goal, history = [] }: { goal: string; history?: Observation[] },
+	workspace: { tree(): Promise<WorkspaceFile[]> }, config: RequestConfig, request: ModelRequest = fetch): Promise<Action> {
 	if (!config.apiKey) { throw new Error('Use Keyline: Choose Model to set an API key for this provider.'); }
 	if (typeof goal !== 'string' || !goal.trim() || goal.length > 4000 || !Array.isArray(history)) { throw new Error('Enter a goal under 4000 characters.'); }
 	const names = (await workspace.tree()).filter(f => !f.directory).map(f => f.path);
-	const action = await requestProposal(config, instructions, { goal, files: names, observations: history }, request);
+	const action = await requestProposal({ ...config, apiKey: config.apiKey }, instructions, { goal, files: names, observations: history }, request);
 	return validate(action, history, names);
 }

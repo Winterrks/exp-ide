@@ -6,6 +6,7 @@
 import fs from 'fs';
 import { builtinModules } from 'module';
 import path from 'path';
+import { keylineNotice, keylineSample, keylineSources, sampleNotice } from './build/lib/keylineHygiene.ts';
 
 const ignores = fs.readFileSync(path.join(import.meta.dirname, '.eslint-ignore'), 'utf8')
 	.toString()
@@ -3004,6 +3005,19 @@ export default [
 		ignores: allowedJavaScriptFiles,
 		rules: {
 			'local/code-no-new-javascript-files': 'error',
+		},
+	},
+	{
+		files: keylineSources,
+		rules: {
+			'header/header': ['error', 'block', keylineNotice],
+		},
+	},
+	// These files form the standalone JavaScript project that the learner opens and edits.
+	{
+		files: [keylineSample],
+		rules: {
+			'header/header': ['error', 'line', sampleNotice],
 		},
 	},
 ];

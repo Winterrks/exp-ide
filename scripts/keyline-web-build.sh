@@ -5,4 +5,4 @@ cd "$(dirname "$0")/.."
 corepack pnpm run gulp copy-codicons compile-extensions-build
 corepack pnpm run gulp compile-extension-media-build
 node build/next/index.ts bundle --target server-web --nls --out .build/keyline-web/out
-node scripts/keyline-web-layout.mjs
+node scripts/keyline-web-layout.mts

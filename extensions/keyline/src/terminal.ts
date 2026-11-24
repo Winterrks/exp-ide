@@ -3,20 +3,21 @@
  *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 import * as vscode from 'vscode';
-import { spawn } from 'node:child_process';
-import { alignTyped, visibleChar } from './guidance.js';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { alignTyped, visibleChar } from './guidance.ts';
+import type { Action, CommandResult } from './actions.ts';
 
 const reset = '\x1b[0m';
 const red = '\x1b[31m';
 const dim = '\x1b[90m';
 
-export function guideTerminal(action, cwd, submitted, closed) {
-	const output = new vscode.EventEmitter();
+export function guideTerminal(action: Extract<Action, { kind: 'command' }>, cwd: string, submitted: (result: CommandResult) => void, closed: () => void) {
+	const output = new vscode.EventEmitter<string>();
 	let input = '';
 	let cursor = 0;
 	let started = false;
-	let child;
-	let timer;
+	let child: ChildProcess | undefined;
+	let timer: NodeJS.Timeout | undefined;
 	let disposed = false;
 
 	function render() {
@@ -54,17 +55,18 @@ export function guideTerminal(action, cwd, submitted, closed) {
 		const command = input;
 		const shell = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : process.env.SHELL || '/bin/sh';
 		const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
-		child = spawn(shell, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+		const running = spawn(shell, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+		child = running;
 		let captured = '';
-		function write(data) {
+		function write(data: string) {
 			if (disposed) { return; }
 			output.fire(data.replace(/\r?\n/g, '\r\n'));
 			captured = (captured + data).slice(-16000);
 		}
-		for (const stream of [child.stdout, child.stderr]) { stream.setEncoding('utf8').on('data', write); }
-		child.once('error', error => write(error.message + '\n'));
+		for (const stream of [running.stdout, running.stderr]) { stream.setEncoding('utf8').on('data', write); }
+		running.once('error', error => write(error.message + '\n'));
 		timer = setTimeout(() => { write(vscode.l10n.t('Command timed out.') + '\n'); stop(); }, 60000);
-		child.once('close', code => {
+		running.once('close', code => {
 			clearTimeout(timer);
 			child = undefined;
 			if (!disposed) {
@@ -74,7 +76,7 @@ export function guideTerminal(action, cwd, submitted, closed) {
 		});
 	}
 
-	const pty = {
+	const pty: vscode.Pseudoterminal = {
 		onDidWrite: output.event,
 		open() { output.fire(action.reason.replace(/[\x00-\x1f\x7f]/g, ' ') + '\r\n\r\n'); render(); },
 		close() { disposed = true; clearTimeout(timer); stop(); output.dispose(); closed(); },

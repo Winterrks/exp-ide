@@ -22,7 +22,7 @@ import sys
 archive = Path(sys.argv[1])
 checksums = {name: digest for digest, name in (line.split() for line in Path("SHASUMS256.txt").read_text().splitlines())}
 if hashlib.sha256(archive.read_bytes()).hexdigest() != checksums[archive.name]:
-    raise SystemExit("Node header archive checksum mismatch")
+	raise SystemExit("Node header archive checksum mismatch")
 PY
 			tar -xzf "$archive"
 		)

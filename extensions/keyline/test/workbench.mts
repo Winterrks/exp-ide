@@ -8,14 +8,16 @@ import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
+import { chromium, expect } from '@playwright/test';
+import { isFileResult } from '../src/actions.ts';
+import type { Turn } from '../src/planner.ts';
+
 const root = path.resolve(import.meta.dirname, '../../..');
-const { chromium, expect } = createRequire(path.join(root, 'scripts/package.json'))('@playwright/test');
 const shots = process.env.KEYLINE_SCREENSHOTS;
 
 test('complete a manual guide and switch between three model providers in Code - OSS', { timeout: 150000 }, async t => {
@@ -32,17 +34,17 @@ test('complete a manual guide and switch between three model providers in Code -
 		'}'
 	].join('\n'));
 
-	const requests = [];
+	const requests: { turn: Turn; path?: string; model: string; credential?: string | string[] }[] = [];
 	const model = createServer(async (req, res) => {
 		const chunks = [];
 		for await (const chunk of req) { chunks.push(chunk); }
 		const request = JSON.parse(Buffer.concat(chunks).toString());
-		const turn = JSON.parse(request.messages.at(-1).content);
+		const turn: Turn = JSON.parse(request.messages.at(-1).content);
 		const anthropic = req.url === '/anthropic/v1/messages';
 		requests.push({ turn, path: req.url, model: request.model, credential: anthropic ? req.headers['x-api-key'] : req.headers.authorization });
 		const action = turn.observations.length
 			? { kind: 'done', title: 'Finished', reason: 'You shared the task collection header.' }
-			: { kind: 'read', path: 'src/tasks.js', startLine: 1, endLine: 1, title: 'Read the header', reason: 'Inspect the description of the task collection.' };
+			: { kind: 'read', path: 'src/tasks.js', startLine: 2, endLine: 2, title: 'Read the header', reason: 'Inspect the description of the task collection.' };
 		res.setHeader('Content-Type', 'application/json');
 		const text = JSON.stringify(action);
 		res.end(JSON.stringify(anthropic
@@ -52,7 +54,9 @@ test('complete a manual guide and switch between three model providers in Code -
 	model.listen(0, '127.0.0.1');
 	await once(model, 'listening');
 	t.after(() => { model.closeAllConnections(); model.close(); });
-	const modelHost = 'http://127.0.0.1:' + model.address().port;
+	const listener = model.address();
+	assert.ok(listener && typeof listener === 'object');
+	const modelHost = 'http://127.0.0.1:' + listener.port;
 
 	const token = randomBytes(24).toString('hex');
 	const tokenPath = path.join(directory, 'token');
@@ -73,7 +77,9 @@ test('complete a manual guide and switch between three model providers in Code -
 	server.stdout.setEncoding('utf8').on('data', chunk => { log = (log + chunk).slice(-12000); });
 	const address = /Extension host agent listening on (\d+)/;
 	await expect.poll(() => { assert.equal(server.exitCode, null); return address.test(log); }, { timeout: 30000 }).toBe(true);
-	const url = new URL('http://127.0.0.1:' + log.match(address)[1]);
+	const port = log.match(address);
+	assert.ok(port);
+	const url = new URL('http://127.0.0.1:' + port[1]);
 	url.searchParams.set('tkn', token);
 	url.searchParams.set('folder', folder);
 
@@ -81,15 +87,15 @@ test('complete a manual guide and switch between three model providers in Code -
 	t.after(() => browser.close());
 	const page = await browser.newPage({ viewport: { width: 1512, height: 936 }, colorScheme: 'dark' });
 	page.setDefaultTimeout(15000);
-	const text = (name, exact = true) => page.getByText(name, { exact }).first();
+	const text = (name: string, exact = true) => page.getByText(name, { exact }).first();
 	const quickInput = page.locator('.quick-input-widget input:visible').first();
-	const command = async name => {
+	const command = async (name: string) => {
 		await page.keyboard.press('F1');
 		await quickInput.fill('>' + name);
 		await page.locator('.quick-input-widget:visible .monaco-list-row:visible').filter({ hasText: name }).first().click();
 	};
-	const fileRow = name => page.locator('.explorer-folders-view .monaco-list-row').filter({ has: page.getByText(name, { exact: true }) }).first();
-	const shot = async name => {
+	const fileRow = (name: string) => page.locator('.explorer-folders-view .monaco-list-row').filter({ has: page.getByText(name, { exact: true }) }).first();
+	const shot = async (name: string) => {
 		if (shots) { await mkdir(shots, { recursive: true }); await page.screenshot({ path: path.join(shots, name + '.png') }); }
 	};
 
@@ -109,6 +115,8 @@ test('complete a manual guide and switch between three model providers in Code -
 	await text('Open src/tasks.js in Explorer', false).waitFor();
 	await expect(page.locator('.monaco-workbench')).toHaveClass(/\bvs-dark\b/);
 
+	// Explorer finishes revealing the target before the learner opens Quick Open.
+	await expect(fileRow('tasks.js')).toBeVisible();
 	// A normal Quick Open must not count as the learner opening the requested Explorer item.
 	await page.keyboard.press('Control+p');
 	await quickInput.fill('src/tasks.js');
@@ -140,7 +148,7 @@ test('complete a manual guide and switch between three model providers in Code -
 	assert.equal(await readFile(source, 'utf8'), before);
 	await page.keyboard.type('E');
 	await text('Use New File in Explorer', false).waitFor();
-	assert.equal(await readFile(source, 'utf8'), before.replace('return tasks.length;', 'return tasks.filter(item => item.completed).length;'));
+	assert.equal(await readFile(source, 'utf8'), before.replace(/^\s*return tasks\.length;/m, '  return tasks.filter(item => item.completed).length;'));
 
 	await fileRow('tests').click({ button: 'right' });
 	await text('New File...').waitFor();
@@ -181,7 +189,7 @@ test('complete a manual guide and switch between three model providers in Code -
 		{ label: 'OpenRouter', model: 'example/fixture-router', path: '/router/v1/chat/completions', credential: 'Bearer router-test' },
 		{ label: 'Anthropic', model: 'fixture-claude', path: '/anthropic/v1/messages', credential: 'claude-test-key' }
 	];
-	async function choose(next) {
+	async function choose(next: (typeof providers)[number]) {
 		await command('Keyline: Choose Model');
 		await page.locator('.quick-input-widget:visible').getByText(next.label, { exact: true }).click();
 		await text(next.label + ' Model ID').waitFor();
@@ -204,14 +212,16 @@ test('complete a manual guide and switch between three model providers in Code -
 		if (providers[index + 1]) { await choose(providers[index + 1]); }
 		// Switching providers mid-read must keep this guide's contents with the original provider.
 		assert.equal(requests.length, index * 2 + 1);
-		const first = requests.at(-1).turn;
+		const first = requests[index * 2].turn;
 		assert.deepEqual(Object.keys(first).sort(), ['files', 'goal', 'observations']);
 		assert.deepEqual(first.observations, []);
 		assert.ok(first.files.includes('src/tasks.js'));
 		await text('Share Selected Lines').click();
 		await text('You shared the task collection header.', false).waitFor();
 		assert.equal(requests.length, index * 2 + 2);
-		assert.equal(requests.at(-1).turn.observations[0].result.text, before.split('\n')[0]);
+		const shared = requests[index * 2 + 1].turn.observations[0].result;
+		assert.ok(isFileResult(shared));
+		assert.equal(shared.text, before.split('\n')[1]);
 		for (const request of requests.slice(-2)) {
 			assert.equal(request.path, provider.path);
 			assert.equal(request.model, provider.model);

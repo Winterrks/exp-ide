@@ -8,11 +8,11 @@ import { getVersion } from '../build/lib/getVersion.ts';
 
 const root = path.resolve(import.meta.dirname, '..');
 const app = path.join(root, '.build/keyline-web');
-const json = async name => JSON.parse(await readFile(path.join(root, name), 'utf8'));
-async function link(source, target) {
+const json = async (name: string) => JSON.parse(await readFile(path.join(root, name), 'utf8'));
+async function link(source: string, target: string) {
 	await mkdir(path.dirname(target), { recursive: true });
 	try { await symlink(path.relative(path.dirname(target), source), target, 'dir'); }
-	catch (error) { if (error.code !== 'EEXIST') { throw error; } }
+	catch (error) { if (!(error instanceof Error) || !('code' in error) || error.code !== 'EEXIST') { throw error; } }
 }
 
 // The Node extension host needs Node-ABI modules from remote, while the browser also needs web assets.

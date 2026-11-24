@@ -50,6 +50,10 @@ extensions/html-language-features/server/src/test/pathCompletionFixtures/src/tes
 extensions/html-language-features/server/test/index.js
 extensions/html/build/update-grammar.mjs
 extensions/json/build/update-grammars.js
+# Editable files in Keyline's bundled JavaScript practice workspace.
+extensions/keyline/sample/src/index.js
+extensions/keyline/sample/src/tasks.js
+extensions/keyline/sample/tests/tasks.test.js
 extensions/latex/build/update-grammars.js
 extensions/less/build/update-grammar.js
 extensions/microsoft-authentication/packageMocks/dpapi/dpapi.js

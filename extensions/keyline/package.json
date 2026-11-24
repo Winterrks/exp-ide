@@ -8,7 +8,7 @@
 	"engines": { "vscode": "^1.147.0" },
 	"type": "module",
 	"enabledApiProposals": ["treeViewMarkdownMessage"],
-	"main": "./extension.js",
+	"main": "./out/extension.js",
 	"extensionKind": ["workspace"],
 	"activationEvents": ["onStartupFinished"],
 	"capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },

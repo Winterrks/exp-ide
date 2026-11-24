@@ -9,10 +9,12 @@ import fs from 'fs';
 import { filter } from './lib/gulp/facade.ts';
 import pall from 'p-all';
 import path from 'path';
+import { isDeepStrictEqual } from 'node:util';
 import VinylFile from 'vinyl';
 import vfs from 'vinyl-fs';
 import { all, copyrightFilter, indentationFilter, lintFilter, stylelintFilter, tsFormattingFilter, unicodeFilter } from './filters.ts';
 import { Formatter } from './lib/formatter.ts';
+import { keylineCopyrightLines } from './lib/keylineHygiene.ts';
 import { oxlint } from './oxlint.ts';
 import gulpstylelint from './stylelint.ts';
 
@@ -92,7 +94,13 @@ export function hygiene(some: NodeJS.ReadWriteStream | string[] | undefined, run
 	const productJson = es.through(function (file: VinylFile) {
 		const product = JSON.parse(file.contents!.toString('utf8'));
 
-		if (product.extensionsGallery) {
+		const keylineGallery = product.applicationName === 'keyline' && isDeepStrictEqual(product.extensionsGallery, {
+			serviceUrl: 'https://open-vsx.org/vscode/gallery',
+			itemUrl: 'https://open-vsx.org/vscode/item',
+			resourceUrlTemplate: 'https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}',
+			controlUrl: 'https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json',
+		});
+		if (product.extensionsGallery && !keylineGallery) {
 			console.error(`product.json: Contains 'extensionsGallery'`);
 			errorCount++;
 		}
@@ -162,8 +170,9 @@ export function hygiene(some: NodeJS.ReadWriteStream | string[] | undefined, run
 	const copyrights = es.through(function (file: VinylFileWithLines) {
 		const lines = file.__lines;
 
-		for (let i = 0; i < copyrightHeaderLines.length; i++) {
-			if (lines[i] !== copyrightHeaderLines[i]) {
+		const expected = keylineCopyrightLines(file.relative.replace(/\\/g, '/')) ?? copyrightHeaderLines;
+		for (let i = 0; i < expected.length; i++) {
+			if (lines[i] !== expected[i]) {
 				console.error(file.relative + ': Missing or bad copyright statement');
 				errorCount++;
 				break;

@@ -296,7 +296,7 @@ export function fromGithub({ name, version, repo, sha256, metadata, releaseAsset
 	const packageJsonFilter = filter('package.json', { restore: true });
 
 	const source = releaseAsset && !latest && !asset
-		? fetchUrls(`${repo}/releases/download/v${version}/${releaseAsset}`, { base: null, checksumSha256: sha256 })
+		? fetchUrls(`/releases/download/v${version}/${releaseAsset}`, { base: repo, checksumSha256: sha256 })
 		: fetchGithub(new URL(repo).pathname, {
 			version,
 			name: asset ? asset.assetName : name => name.endsWith('.vsix'),
