@@ -11,6 +11,20 @@ Open **Keyline** in the secondary sidebar, or run **Keyline: Open Agent** from t
 - Type `//DONE` on a separate line to save your actual edit and advance. The typing buffer is private to the guide. Auto Save and partial markers leave the source file intact until you finish.
 - For file creation, use **New File** in Explorer and type the requested path. For a command, type it in the guided integrated terminal and press Enter to run your input. **Terminal → New Terminal** opens an ordinary interactive shell.
 
+## Choose a model
+
+Open the gear in the Agent view or run **Keyline: Choose Model**. Select a provider, enter a model ID your account can access, and supply its API key when prompted. For OpenRouter, enter the full model ID from its catalog, including the provider prefix. Keys entered here use VS Code SecretStorage. Your selection applies to new guides. A guide already in progress keeps its provider, endpoint and model.
+
+| Provider | Default model | Extension host environment key |
+| --- | --- | --- |
+| OpenAI | `gpt-4.1-mini` | `OPENAI_API_KEY` |
+| OpenRouter | `openai/gpt-4.1-mini` | `OPENROUTER_API_KEY` |
+| Anthropic | `claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
+
+You can also configure the extension host before starting Keyline. Set `KEYLINE_MODEL_PROVIDER` to `openai`, `openrouter`, or `anthropic` and supply the matching key above. Each provider accepts its own `_MODEL` and `_BASE_URL` variables, such as `ANTHROPIC_MODEL` and `OPENROUTER_BASE_URL`. The existing `KEYLINE_MODEL_API_KEY`, `KEYLINE_MODEL`, and `KEYLINE_MODEL_BASE_URL` overrides apply to the environment's default provider. **Use Environment Defaults** in the picker clears a saved model selection.
+
+OpenAI uses Chat Completions by default. To use the Responses API, set `OPENAI_BASE_URL=https://api.openai.com/v1/responses`. OpenRouter uses its chat completions endpoint. Anthropic uses its native Messages API. On the first turn, the model receives your goal and workspace filenames. Subsequent turns include the actions you completed and the results you shared. Practice guides work offline.
+
 ## Run the cloud workbench
 
 Use Linux with Node 24 (see `.nvmrc`), Corepack, Python 3, curl, a C++ compiler, make, pkg-config and the Kerberos development headers. From the checkout root, run the following commands.
@@ -22,8 +36,6 @@ scripts/keyline-web.sh
 ```
 
 Open the URL printed by the server. It listens on loopback port 5173 and uses Code - OSS connection tokens. The first launch copies Taskboard into `.keyline/taskboard`. Set `KEYLINE_WORKSPACE` to open your own folder and `KEYLINE_PORT` to choose another port. Local projects and server data live under the ignored `.keyline/` directory.
-
-For open-ended requests, set `KEYLINE_MODEL_API_KEY` on the extension host. Configure `KEYLINE_MODEL` and `KEYLINE_MODEL_BASE_URL` when using another OpenAI-compatible chat-completions provider. The host also accepts `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_BASE_URL`. The planner receives workspace filenames and the results of steps that the learner performs. The practice guides work offline.
 
 The native desktop source and upstream launchers are included. To develop the Electron desktop application, follow the upstream desktop build instructions, install the full dependencies with the pinned pnpm, and launch with `scripts/code.sh` or `scripts/code.bat`. The Extensions view uses Open VSX and supports installing VSIX files. Microsoft-hosted services and proprietary extensions have their own access and licensing requirements. [Desktop build prerequisites](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
 

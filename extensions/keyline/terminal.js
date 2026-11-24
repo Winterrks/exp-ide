@@ -49,6 +49,8 @@ export function guideTerminal(action, cwd, submitted, closed) {
 		const env = { ...process.env };
 		delete env.KEYLINE_MODEL_API_KEY;
 		delete env.OPENAI_API_KEY;
+		delete env.OPENROUTER_API_KEY;
+		delete env.ANTHROPIC_API_KEY;
 		const command = input;
 		const shell = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : process.env.SHELL || '/bin/sh';
 		const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];

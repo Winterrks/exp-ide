@@ -2,6 +2,7 @@
 	"view.name": "Agent",
 	"command.open": "Open Agent",
 	"command.start": "Describe a Change",
+	"command.chooseModel": "Choose Model",
 	"command.practice": "Start a Practice Guide",
 	"command.continue": "Share Selected Lines",
 	"command.resume": "Return to Current Step",

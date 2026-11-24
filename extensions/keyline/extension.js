@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { guides, matchGuide, nextStarter } from './guides.js';
 import { alignTyped, completedEdit, visibleChar } from './guidance.js';
-import { propose } from './planner.js';
+import { modelConfig, modelEndpoint, propose, providers } from './planner.js';
 import { DraftStore } from './draft.js';
 import { guideTerminal } from './terminal.js';
 
@@ -43,6 +43,61 @@ function row(label, icon, command, description) {
 	item.description = description;
 	if (command) { item.command = { command, title: label }; }
 	return item;
+}
+
+const modelPreference = 'modelSelection';
+
+function secretName(config) {
+	const url = modelEndpoint(config);
+	return 'apiKey/' + config.provider + '/' + url.origin + url.pathname;
+}
+
+function selectedModel(context) {
+	return modelConfig(process.env, context.globalState.get(modelPreference));
+}
+
+async function apiKeyForModel(context, config) {
+	return config.apiKey || await context.secrets.get(secretName(config));
+}
+
+async function chooseModel(context) {
+	const previous = context.globalState.get(modelPreference);
+	const items = Object.entries(providers).map(([provider, { label }]) => ({
+		provider, label, description: modelConfig(process.env, previous?.provider === provider ? previous : { provider }).model
+	}));
+	if (previous) { items.push({ label: t('Use Environment Defaults') }); }
+	const choice = await window.showQuickPick(items, {
+		title: t('Choose Model'), placeHolder: t('Choose the provider for new guides')
+	});
+	if (!choice) { return; }
+	if (!choice.provider) {
+		const config = modelConfig(process.env);
+		await context.globalState.update(modelPreference, undefined);
+		return config;
+	}
+	const model = await window.showInputBox({
+		title: t('{0} Model ID', choice.label), value: choice.description,
+		prompt: choice.provider === 'openrouter' ? t('Enter the model ID from OpenRouter, including its provider prefix.') : t('Enter a model ID available to your API account.'),
+		validateInput: value => value.trim() ? undefined : t('Enter a model ID.')
+	});
+	if (!model?.trim()) { return; }
+	const selection = { provider: choice.provider, model: model.trim() };
+	const config = modelConfig(process.env, selection);
+	const endpoint = modelEndpoint(config);
+	if (!config.apiKey) {
+		const name = secretName(config);
+		const saved = await context.secrets.get(name);
+		const key = await window.showInputBox({
+			title: t('{0} API Key', choice.label), password: true, ignoreFocusOut: true,
+			prompt: t('Keyline will send this key to {0}.', endpoint.origin),
+			placeHolder: saved ? t('Press Enter to keep your saved key, or enter a replacement') : t('Enter your API key'),
+			validateInput: value => saved || value.trim() ? undefined : t('Enter an API key.')
+		});
+		if (key === undefined) { return; }
+		if (key.trim()) { await context.secrets.store(name, key.trim()); }
+	}
+	await context.globalState.update(modelPreference, selection);
+	return config;
 }
 
 export function activate(context) {
@@ -97,7 +152,7 @@ export function activate(context) {
 
 	function update() {
 		const s = session;
-		view.description = s?.key ? t('Practice') : s ? t('Guided change') : undefined;
+		view.description = s?.key ? t('Practice') : s?.model ? providers[s.model.provider].label + ' · ' + s.model.model : undefined;
 		if (s) {
 			const message = new vscode.MarkdownString();
 			message.appendMarkdown('**').appendText(s.goal).appendMarkdown('**\n\n');
@@ -150,11 +205,7 @@ export function activate(context) {
 		s.action = undefined; s.created = false; s.observation = undefined; s.problem = undefined; s.busy = true; update();
 		try {
 			const action = s.key ? nextStarter(s.key, s.history, await names(s))
-				: await propose(s, { tree: () => names(s) }, {
-					apiKey: process.env.KEYLINE_MODEL_API_KEY || process.env.OPENAI_API_KEY,
-					model: process.env.KEYLINE_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-					baseUrl: process.env.KEYLINE_MODEL_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
-				});
+				: await propose(s, { tree: () => names(s) }, { ...s.model, apiKey: await apiKeyForModel(context, s.model) });
 			if (session !== s) { return; }
 			s.action = action; s.busy = false; update();
 			await present(s);
@@ -359,6 +410,7 @@ export function activate(context) {
 			}
 			let key;
 			let goal;
+			let model;
 			if (practice) {
 				try { await workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'src', 'tasks.js')); }
 				catch {
@@ -373,11 +425,19 @@ export function activate(context) {
 				goal = await window.showInputBox({ title: t('Describe a Change'), prompt: t('What would you like to change in this workspace?'), validateInput: value => value.trim().length > 4000 ? t('Use up to 4000 characters.') : undefined });
 				if (!goal?.trim()) { return; }
 				goal = goal.trim();
-				if (!process.env.KEYLINE_MODEL_API_KEY && !process.env.OPENAI_API_KEY && matchGuide(goal)) {
-					try {
-						await workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'src', 'tasks.js'));
-						key = matchGuide(goal);
-					} catch { /* A custom workspace uses the configured model. */ }
+				model = selectedModel(context);
+				if (!await apiKeyForModel(context, model)) {
+					const practiceKey = matchGuide(goal);
+					if (practiceKey) {
+						try {
+							await workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'src', 'tasks.js'));
+							key = practiceKey;
+						} catch { /* A custom workspace uses the configured model. */ }
+					}
+					if (!key) {
+						model = await chooseModel(context);
+						if (!model) { return; }
+					}
 				}
 			}
 			if (session?.draft?.touched) {
@@ -385,7 +445,7 @@ export function activate(context) {
 				if (await window.showWarningMessage(t('Starting a new guide closes your current typing draft.'), { modal: true }, replace) !== replace) { return; }
 			}
 			await end();
-			const s = { root: folder.uri, key, goal, history: [] };
+			const s = { root: folder.uri, key, goal, model, history: [] };
 			session = s;
 			await commands.executeCommand('keyline.guide.focus');
 			await plan(s);
@@ -394,6 +454,10 @@ export function activate(context) {
 
 	register('start', () => start(false));
 	register('practice', () => start(true));
+	register('chooseModel', async () => {
+		const model = await chooseModel(context);
+		if (model) { window.setStatusBarMessage(t('New Keyline guides will use {0} · {1}', providers[model.provider].label, model.model), 5000); }
+	});
 	register('open', () => commands.executeCommand('keyline.guide.focus'));
 	register('stop', async () => {
 		if (session?.draft?.touched) {

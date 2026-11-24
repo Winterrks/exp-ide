@@ -21,6 +21,7 @@
 		"commands": [
 			{ "command": "keyline.open", "title": "%command.open%", "category": "Keyline" },
 			{ "command": "keyline.start", "title": "%command.start%", "category": "Keyline", "icon": "$(add)" },
+			{ "command": "keyline.chooseModel", "title": "%command.chooseModel%", "category": "Keyline", "icon": "$(settings-gear)" },
 			{ "command": "keyline.practice", "title": "%command.practice%", "category": "Keyline" },
 			{ "command": "keyline.continue", "title": "%command.continue%", "category": "Keyline", "enablement": "keyline.canContinue" },
 			{ "command": "keyline.resume", "title": "%command.resume%", "category": "Keyline", "enablement": "keyline.active" },
@@ -29,6 +30,7 @@
 		"menus": {
 			"view/title": [
 				{ "command": "keyline.start", "when": "view == keyline.guide && !keyline.active", "group": "navigation" },
+				{ "command": "keyline.chooseModel", "when": "view == keyline.guide", "group": "navigation@2" },
 				{ "command": "keyline.stop", "when": "view == keyline.guide && keyline.active", "group": "navigation" }
 			]
 		},

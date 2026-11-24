@@ -18,13 +18,19 @@ const root = path.resolve(import.meta.dirname, '../../..');
 const { chromium, expect } = createRequire(path.join(root, 'scripts/package.json'))('@playwright/test');
 const shots = process.env.KEYLINE_SCREENSHOTS;
 
-test('complete a guide in Code - OSS, use its shell, and share a read with a model', { timeout: 150000 }, async t => {
+test('complete a manual guide and switch between three model providers in Code - OSS', { timeout: 150000 }, async t => {
 	const directory = await mkdtemp(path.join(tmpdir(), 'keyline-workbench-'));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const folder = path.join(directory, 'taskboard');
 	await cp(path.join(root, 'extensions/keyline/sample'), folder, { recursive: true });
 	await mkdir(path.join(folder, '.vscode'));
 	await writeFile(path.join(folder, '.vscode/settings.json'), JSON.stringify({ 'files.autoSave': 'afterDelay', 'files.autoSaveDelay': 100 }));
+	await writeFile(path.join(folder, 'tests/provider-environment.test.js'), [
+		`import assert from 'node:assert/strict';`,
+		`for (const name of ['KEYLINE_MODEL_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY']) {`,
+		'  assert.equal(process.env[name], undefined, name);',
+		'}'
+	].join('\n'));
 
 	const requests = [];
 	const model = createServer(async (req, res) => {
@@ -32,16 +38,21 @@ test('complete a guide in Code - OSS, use its shell, and share a read with a mod
 		for await (const chunk of req) { chunks.push(chunk); }
 		const request = JSON.parse(Buffer.concat(chunks).toString());
 		const turn = JSON.parse(request.messages.at(-1).content);
-		requests.push(turn);
+		const anthropic = req.url === '/anthropic/v1/messages';
+		requests.push({ turn, path: req.url, model: request.model, credential: anthropic ? req.headers['x-api-key'] : req.headers.authorization });
 		const action = turn.observations.length
 			? { kind: 'done', title: 'Finished', reason: 'You shared the task collection header.' }
 			: { kind: 'read', path: 'src/tasks.js', startLine: 1, endLine: 1, title: 'Read the header', reason: 'Inspect the description of the task collection.' };
 		res.setHeader('Content-Type', 'application/json');
-		res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(action) } }] }));
+		const text = JSON.stringify(action);
+		res.end(JSON.stringify(anthropic
+			? { type: 'message', stop_reason: 'end_turn', content: [{ type: 'text', text }] }
+			: { choices: [{ finish_reason: 'stop', message: { content: text } }] }));
 	});
 	model.listen(0, '127.0.0.1');
 	await once(model, 'listening');
 	t.after(() => { model.closeAllConnections(); model.close(); });
+	const modelHost = 'http://127.0.0.1:' + model.address().port;
 
 	const token = randomBytes(24).toString('hex');
 	const tokenPath = path.join(directory, 'token');
@@ -50,7 +61,9 @@ test('complete a guide in Code - OSS, use its shell, and share a read with a mod
 		'--host', '127.0.0.1', '--port', '0', '--server-data-dir', path.join(directory, 'server'),
 		'--connection-token-file', tokenPath, '--default-folder', folder], {
 		cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env,
-			KEYLINE_MODEL_API_KEY: 'local-test', KEYLINE_MODEL_BASE_URL: 'http://127.0.0.1:' + model.address().port + '/v1' }
+			KEYLINE_MODEL_PROVIDER: 'openai', KEYLINE_MODEL_API_KEY: 'openai-test', KEYLINE_MODEL: 'fixture-openai', KEYLINE_MODEL_BASE_URL: modelHost + '/v1',
+			OPENAI_API_KEY: 'openai-alias-test', OPENROUTER_API_KEY: 'router-test', OPENROUTER_BASE_URL: modelHost + '/router/v1',
+			ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: modelHost + '/anthropic' }
 	});
 	t.after(async () => {
 		if (server.exitCode === null && !server.signalCode) { const exit = once(server, 'exit'); server.kill(); await exit; }
@@ -163,16 +176,46 @@ test('complete a guide in Code - OSS, use its shell, and share a read with a mod
 	await page.keyboard.press('Enter');
 	await expect.poll(() => readFile(path.join(folder, 'native-shell.result'), 'utf8').catch(() => ''), { timeout: 15000 }).toBe('keyline-pty');
 
-	await text('Describe Another Change').click();
-	await quickInput.fill('Explain the task collection header');
-	await quickInput.press('Enter');
-	await text('Inspect the description of the task collection.', false).waitFor();
-	await fileRow('tasks.js').click();
-	await text('Review the green lines', false).waitFor();
-	assert.equal(requests.length, 1);
-	assert.deepEqual(requests[0].observations, []);
-	assert.ok(requests[0].files.includes('src/tasks.js'));
-	await text('Share Selected Lines').click();
-	await text('You shared the task collection header.', false).waitFor();
-	assert.equal(requests[1].observations[0].result.text, before.split('\n')[0]);
+	const providers = [
+		{ label: 'OpenAI', model: 'fixture-openai', path: '/v1/chat/completions', credential: 'Bearer openai-test' },
+		{ label: 'OpenRouter', model: 'example/fixture-router', path: '/router/v1/chat/completions', credential: 'Bearer router-test' },
+		{ label: 'Anthropic', model: 'fixture-claude', path: '/anthropic/v1/messages', credential: 'claude-test-key' }
+	];
+	async function choose(next) {
+		await command('Keyline: Choose Model');
+		await page.locator('.quick-input-widget:visible').getByText(next.label, { exact: true }).click();
+		await text(next.label + ' Model ID').waitFor();
+		await quickInput.fill(next.model);
+		await quickInput.press('Enter');
+		if (next.label === 'Anthropic') {
+			const key = page.locator('.quick-input-widget:visible input[type=password]');
+			await key.fill(next.credential);
+			await key.press('Enter');
+		}
+		await page.locator('.quick-input-widget:visible').waitFor({ state: 'hidden' });
+	}
+	for (const [index, provider] of providers.entries()) {
+		await text('Describe Another Change').click();
+		await quickInput.fill('Explain the task collection header');
+		await quickInput.press('Enter');
+		await text('Inspect the description of the task collection.', false).waitFor();
+		await fileRow('tasks.js').click();
+		await text('Review the green lines', false).waitFor();
+		if (providers[index + 1]) { await choose(providers[index + 1]); }
+		// Switching providers mid-read must keep this guide's contents with the original provider.
+		assert.equal(requests.length, index * 2 + 1);
+		const first = requests.at(-1).turn;
+		assert.deepEqual(Object.keys(first).sort(), ['files', 'goal', 'observations']);
+		assert.deepEqual(first.observations, []);
+		assert.ok(first.files.includes('src/tasks.js'));
+		await text('Share Selected Lines').click();
+		await text('You shared the task collection header.', false).waitFor();
+		assert.equal(requests.length, index * 2 + 2);
+		assert.equal(requests.at(-1).turn.observations[0].result.text, before.split('\n')[0]);
+		for (const request of requests.slice(-2)) {
+			assert.equal(request.path, provider.path);
+			assert.equal(request.model, provider.model);
+			assert.equal(request.credential, provider.credential);
+		}
+	}
 });
