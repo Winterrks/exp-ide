@@ -618,6 +618,9 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 				try {
 					this.delegate?.willOpenElement(e.browserEvent);
 					await this.editorService.openEditor({ resource: element.resource, options: { preserveFocus: e.editorOptions.preserveFocus, pinned: e.editorOptions.pinned, source: EditorOpenSource.USER } }, e.sideBySide ? SIDE_GROUP : ACTIVE_GROUP);
+					if (this.contextKeyService.getContextKeyValue<boolean>('keyline.awaitingRead')) {
+						await this.commandService.executeCommand('keyline.explorerOpened', element.resource);
+					}
 				} finally {
 					this.delegate?.didOpenElement();
 				}

@@ -1,0 +1,10 @@
+{
+	"view.name": "Agent",
+	"command.open": "Open Agent",
+	"command.start": "Describe a Change",
+	"command.practice": "Start a Practice Guide",
+	"command.continue": "Share Selected Lines",
+	"command.resume": "Return to Current Step",
+	"command.stop": "End Guide",
+	"welcome": "What would you like to change?\n[Describe a Change](command:keyline.start)\n[Start a Practice Guide](command:keyline.practice)"
+}

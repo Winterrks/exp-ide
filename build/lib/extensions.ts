@@ -285,7 +285,7 @@ export function fromVsix(vsixPath: string, { name: extensionName, version, sha25
 }
 
 
-export function fromGithub({ name, version, repo, sha256, metadata }: IExtensionDefinition, options?: { asset?: { assetName: string; sha256: string }; latest?: boolean }): Stream {
+export function fromGithub({ name, version, repo, sha256, metadata, releaseAsset }: IExtensionDefinition, options?: { asset?: { assetName: string; sha256: string }; latest?: boolean }): Stream {
 	const asset = options?.asset;
 	const latest = options?.latest ?? false;
 	fancyLog('Downloading extension from GH:', ansiColors.yellow(`${name}@${latest ? 'latest' : version}`), asset ? ansiColors.gray(`(${asset.assetName})`) : '', '...');
@@ -295,14 +295,17 @@ export function fromGithub({ name, version, repo, sha256, metadata }: IExtension
 
 	const packageJsonFilter = filter('package.json', { restore: true });
 
-	return fetchGithub(new URL(repo).pathname, {
-		version,
-		name: asset ? asset.assetName : name => name.endsWith('.vsix'),
-		// The checksum is tied to a specific version; when resolving the latest release the
-		// downloaded asset differs, so it cannot be validated against the pinned checksum.
-		checksumSha256: latest ? undefined : (asset ? asset.sha256 : sha256),
-		latest
-	})
+	const source = releaseAsset && !latest && !asset
+		? fetchUrls(`${repo}/releases/download/v${version}/${releaseAsset}`, { base: null, checksumSha256: sha256 })
+		: fetchGithub(new URL(repo).pathname, {
+			version,
+			name: asset ? asset.assetName : name => name.endsWith('.vsix'),
+			// The checksum is tied to a specific version; when resolving the latest release the
+			// downloaded asset differs, so it cannot be validated against the pinned checksum.
+			checksumSha256: latest ? undefined : (asset ? asset.sha256 : sha256),
+			latest
+		});
+	return source
 		.pipe(buffer())
 		.pipe(vinylZip.src())
 		.pipe(filter('extension/**'))

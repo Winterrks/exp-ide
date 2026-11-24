@@ -1,0 +1,40 @@
+{
+	"name": "keyline",
+	"displayName": "Keyline Agent",
+	"description": "Work through proposed changes in the editor, Explorer, and terminal.",
+	"version": "0.1.0",
+	"publisher": "keyline",
+	"license": "MIT",
+	"engines": { "vscode": "^1.147.0" },
+	"type": "module",
+	"enabledApiProposals": ["treeViewMarkdownMessage"],
+	"main": "./extension.js",
+	"extensionKind": ["workspace"],
+	"activationEvents": ["onStartupFinished"],
+	"capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
+	"contributes": {
+		"resourceLabelFormatters": [{ "scheme": "keyline-draft", "formatting": { "label": "Guided edit/${path}", "separator": "/", "stripPathStartingSeparator": true } }],
+		"viewsContainers": {
+			"secondarySidebar": [{ "id": "keyline", "title": "Keyline", "icon": "guide.svg" }]
+		},
+		"views": { "keyline": [{ "id": "keyline.guide", "name": "%view.name%", "icon": "guide.svg", "contextualTitle": "Keyline" }] },
+		"commands": [
+			{ "command": "keyline.open", "title": "%command.open%", "category": "Keyline" },
+			{ "command": "keyline.start", "title": "%command.start%", "category": "Keyline", "icon": "$(add)" },
+			{ "command": "keyline.practice", "title": "%command.practice%", "category": "Keyline" },
+			{ "command": "keyline.continue", "title": "%command.continue%", "category": "Keyline", "enablement": "keyline.canContinue" },
+			{ "command": "keyline.resume", "title": "%command.resume%", "category": "Keyline", "enablement": "keyline.active" },
+			{ "command": "keyline.stop", "title": "%command.stop%", "category": "Keyline", "enablement": "keyline.active", "icon": "$(debug-stop)" }
+		],
+		"menus": {
+			"view/title": [
+				{ "command": "keyline.start", "when": "view == keyline.guide && !keyline.active", "group": "navigation" },
+				{ "command": "keyline.stop", "when": "view == keyline.guide && keyline.active", "group": "navigation" }
+			]
+		},
+		"viewsWelcome": [{
+			"view": "keyline.guide",
+			"contents": "%welcome%"
+		}]
+	}
+}

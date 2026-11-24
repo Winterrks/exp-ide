@@ -1,3 +1,34 @@
+# Keyline
+
+Keyline is a source fork of Code - OSS 1.147.0. Its editor, Explorer, terminal, search, source control, debugger, settings, themes, and extension host come from the VS Code workbench. The desktop and server-backed web workbenches start with the bundled Dark 2026 theme. [Upstream source at the fork point](https://github.com/microsoft/vscode/tree/8a14f0cc1b08d531eb83255ea3764ae22aa932b5)
+
+## Try a guide
+
+Open **Keyline** in the secondary sidebar, or run **Keyline: Open Agent** from the Command Palette. In a trusted workspace, choose **Describe a Change** for a model-backed guide or **Start a Practice Guide** for the included Taskboard exercises.
+
+- Click the indicated file in Explorer. Review the green lines and the reason, then choose **Share Selected Lines**.
+- The editor selects the proposed deletion in red. Replace it by hand. The hint at the caret shows one character, including spaces and line breaks. You can type your own implementation. Differences appear in red.
+- Type `//DONE` on a separate line to save your actual edit and advance. The typing buffer is private to the guide. Auto Save and partial markers leave the source file intact until you finish.
+- For file creation, use **New File** in Explorer and type the requested path. For a command, type it in the guided integrated terminal and press Enter to run your input. **Terminal → New Terminal** opens an ordinary interactive shell.
+
+## Run the cloud workbench
+
+Use Linux with Node 24 (see `.nvmrc`), Corepack, Python 3, curl, a C++ compiler, make, pkg-config and the Kerberos development headers. From the checkout root, run the following commands.
+
+```sh
+scripts/keyline-web-install.sh
+scripts/keyline-web-build.sh
+scripts/keyline-web.sh
+```
+
+Open the URL printed by the server. It listens on loopback port 5173 and uses Code - OSS connection tokens. The first launch copies Taskboard into `.keyline/taskboard`. Set `KEYLINE_WORKSPACE` to open your own folder and `KEYLINE_PORT` to choose another port. Local projects and server data live under the ignored `.keyline/` directory.
+
+For open-ended requests, set `KEYLINE_MODEL_API_KEY` on the extension host. Configure `KEYLINE_MODEL` and `KEYLINE_MODEL_BASE_URL` when using another OpenAI-compatible chat-completions provider. The host also accepts `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_BASE_URL`. The planner receives workspace filenames and the results of steps that the learner performs. The practice guides work offline.
+
+The native desktop source and upstream launchers are included. To develop the Electron desktop application, follow the upstream desktop build instructions, install the full dependencies with the pinned pnpm, and launch with `scripts/code.sh` or `scripts/code.bat`. The Extensions view uses Open VSX and supports installing VSIX files. Microsoft-hosted services and proprietary extensions have their own access and licensing requirements. [Desktop build prerequisites](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
+
+Run the focused Keyline tests with `node --test extensions/keyline/test/*.test.js`. With Chromium installed, run `CHROMIUM_PATH=/usr/bin/chromium node --test extensions/keyline/test/workbench.mjs` to exercise the real workbench in a temporary workspace. The source for the guided workflow is in `extensions/keyline`.
+
 # Visual Studio Code - Open Source ("Code - OSS")
 [![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
 [![Bugs](https://img.shields.io/github/issues/microsoft/vscode/bug.svg)](https://github.com/microsoft/vscode/issues?utf8=✓&q=is%3Aissue+is%3Aopen+label%3Abug)

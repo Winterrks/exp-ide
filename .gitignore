@@ -59,3 +59,6 @@ dist
 .v[0-9]*/
 # Local agent validation evidence
 .agent-validation/
+
+# Local Keyline practice workspaces and cloud build data
+/.keyline/

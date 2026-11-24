@@ -23,6 +23,7 @@ export interface IExtensionDefinition {
 	repo: string;
 	platforms?: string[];
 	vsix?: string;
+	releaseAsset?: string;
 	/**
 	 * Per-target checksums for a platform-specific extension published to a GitHub release.
 	 * Keyed by marketplace target platform (e.g. `win32-x64`, `linux-armhf`, `alpine-x64`).
@@ -93,6 +94,8 @@ function getExtensionDownloadStream(extension: IExtensionDefinition) {
 			return es.readArray([]);
 		}
 		input = ext.fromGithub(extension, { asset, latest: isInsiders() });
+	} else if (extension.releaseAsset) {
+		input = ext.fromGithub(extension);
 	} else if (productjson.extensionsGallery?.serviceUrl) {
 		input = ext.fromMarketplace(productjson.extensionsGallery.serviceUrl, extension);
 	} else {

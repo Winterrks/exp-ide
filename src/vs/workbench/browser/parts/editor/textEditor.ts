@@ -124,6 +124,18 @@ export abstract class AbstractTextEditor<T extends IEditorViewState> extends Abs
 		// Specific editor options always overwrite user configuration
 		const editorConfiguration: ICodeEditorOptions = isObject(configuration.editor) ? deepClone(configuration.editor) : Object.create(null);
 		Object.assign(editorConfiguration, this.getConfigurationOverrides(configuration));
+		if (this.getActiveResource()?.scheme === 'keyline-draft') {
+			// A guided buffer offers exactly one character at a time, including whitespace.
+			editorConfiguration.quickSuggestions = false;
+			editorConfiguration.suggestOnTriggerCharacters = false;
+			editorConfiguration.inlineSuggest = { enabled: false };
+			editorConfiguration.autoClosingBrackets = 'never';
+			editorConfiguration.autoClosingQuotes = 'never';
+			editorConfiguration.autoSurround = 'never';
+			editorConfiguration.autoIndent = 'none';
+			editorConfiguration.formatOnType = false;
+		}
+
 
 		// ARIA label
 		editorConfiguration.ariaLabel = this.computeAriaLabel();
